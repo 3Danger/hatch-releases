@@ -1,0 +1,82 @@
+# Builds Hatch from the private source repository and publishes the release here.
+# Started by a tag push in the source repository (repository_dispatch) or by hand:
+#   gh workflow run release.yml -R 3Danger/hatch-releases -f tag=v0.2.0
+# publish=false only builds and tests.
+name: Release
+
+on:
+  repository_dispatch:
+    types: [release]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag in the source repository, e.g. v0.2.0
+        required: true
+      publish:
+        description: Publish the release
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency: release
+
+jobs:
+  release:
+    runs-on: macos-26
+    env:
+      QUIET: SWIFT_SUPPRESS_WARNINGS=YES GCC_WARN_INHIBIT_ALL_WARNINGS=YES
+      TAG: ${{ github.event.inputs.tag || github.event.client_payload.tag }}
+      PUBLISH: ${{ github.event.inputs.publish || github.event.client_payload.publish || 'true' }}
+    steps:
+      - name: Check tag
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "bad tag: $TAG"; exit 1; }
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: 3Danger/hatch
+          ref: ${{ env.TAG }}
+          token: ${{ secrets.RELEASES_TOKEN }}
+          fetch-depth: 0 # tags for the change list
+          persist-credentials: false
+
+      - name: Generate project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      # The log is public: -quiet and no warnings, so code shows up only in a real error or a failed test
+      - name: Test
+        run: |
+          xcodebuild test -scheme Hatch -destination 'platform=macOS' -derivedDataPath build -quiet $QUIET \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=""
+
+      # build number = commit count: grows with every release, whichever repository builds it
+      - name: Build
+        run: |
+          xcodebuild build -scheme Hatch -configuration Release -destination 'generic/platform=macOS' \
+            -derivedDataPath build -quiet $QUIET \
+            ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$(git rev-list --count HEAD)" \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=""
+
+      - name: Package
+        run: |
+          APP=build/Build/Products/Release/Hatch.app
+          codesign --verify --deep --strict "$APP"
+          mkdir pkg && cp -R "$APP" pkg/ && cp LICENSE pkg/LICENSE.txt && cp THIRD-PARTY-NOTICES.md pkg/
+          ditto -c -k pkg "Hatch-$VERSION.zip"
+          shasum -a 256 "Hatch-$VERSION.zip" | tee "Hatch-$VERSION.zip.sha256"
+
+      - name: Publish release
+        if: env.PUBLISH != 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PREV=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+          git log --format='- %s' ${PREV:+"$PREV.."}"$TAG" > notes.md
+          gh release create "$TAG" "Hatch-$VERSION.zip" "Hatch-$VERSION.zip.sha256" \
+            --repo "$GITHUB_REPOSITORY" --target main --title "Hatch $VERSION" --notes-file notes.md
