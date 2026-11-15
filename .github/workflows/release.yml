@@ -109,16 +109,14 @@ jobs:
         env:
           ED_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
-          APP=build/Build/Products/Release/Hatch.app
-          mkdir pkg && ditto "$APP" pkg/Hatch.app && cp LICENSE pkg/LICENSE.txt && cp THIRD-PARTY-NOTICES.md pkg/
-          codesign --verify --deep --strict pkg/Hatch.app
-          ditto -c -k pkg "Hatch-$VERSION.zip"
-          shasum -a 256 "Hatch-$VERSION.zip" | tee "Hatch-$VERSION.zip.sha256"
+          # Hatch.dmg: the app and an Applications link over a "drag here" background; EULA and notices are inside the app.
+          # make-dmg.sh checks the image's contents and the app's signature inside it.
+          scripts/make-dmg.sh build/Build/Products/Release/Hatch.app Hatch.dmg
           PREV=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
           git log --format='- %s' ${PREV:+"$PREV.."}"$TAG" > notes.md
-          # update feed for Sparkle: this release only, the archive signed with the update key
-          printf '%s' "$ED_KEY" | scripts/make-appcast.sh "Hatch-$VERSION.zip" "$VERSION" "$(git rev-list --count HEAD)" notes.md \
-            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/Hatch-$VERSION.zip" - > appcast.xml
+          # update feed for Sparkle: this release only, the image signed with the update key
+          printf '%s' "$ED_KEY" | scripts/make-appcast.sh Hatch.dmg "$VERSION" "$(git rev-list --count HEAD)" notes.md \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/Hatch.dmg" - > appcast.xml
           xmllint --noout appcast.xml
 
       - name: Publish release
@@ -126,10 +124,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$TAG" "Hatch-$VERSION.zip" "Hatch-$VERSION.zip.sha256" appcast.xml \
+          # GitHub shows each asset's SHA-256 itself: no separate .sha256
+          gh release create "$TAG" Hatch.dmg appcast.xml \
             --repo "$GITHUB_REPOSITORY" --target main --title "Hatch $VERSION" --notes-file notes.md
 
-      # What installed copies will see: the latest release's feed, its archive and the archive's signature.
+      # What installed copies will see: the latest release's feed, its image and the image's signature.
       # --retry-all-errors: right after publishing, "latest" may still answer 404 for a few seconds
       - name: Check published update
         if: env.PUBLISH != 'false'
@@ -138,9 +137,9 @@ jobs:
           grep -q "<sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>" feed.xml || { echo "latest feed is not $VERSION"; exit 1; }
           URL=$(sed -n 's/.*enclosure url="\([^"]*\)".*/\1/p' feed.xml)
           SIGNATURE=$(sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p' feed.xml)
-          curl -sfL --retry 6 --retry-delay 10 --retry-all-errors -o published.zip "$URL"
+          curl -sfL --retry 6 --retry-delay 10 --retry-all-errors -o published.dmg "$URL"
           KEY=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" build/Build/Products/Release/Hatch.app/Contents/Info.plist)
-          swift scripts/ed25519.swift verify "$KEY" published.zip "$SIGNATURE"
+          swift scripts/ed25519.swift verify "$KEY" published.dmg "$SIGNATURE"
 
       - name: Remove keychain
         if: always() && env.KEYCHAIN != ''
