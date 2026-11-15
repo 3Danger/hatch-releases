@@ -5,7 +5,7 @@
 <p align="center"><b>A terminal one keystroke away.</b> Press <kbd>⌥</kbd><kbd>Space</kbd>, run a command, close it.</p>
 
 <p align="center">
-  <a href="https://github.com/3Danger/hatch-releases/releases/latest"><b>Download for macOS</b></a> · macOS 26+ · free
+  <a href="https://github.com/3Danger/hatch-releases/releases/latest/download/Hatch.dmg"><b>Download for macOS</b></a> · macOS 26+ · free
 </p>
 
 <p align="center"><img src="docs/media/demo.gif" width="800" alt="Hatch: a command in the panel, a grep filter, the clipboard, screenshots with ⇧⌘4, the folder tree, apps and the calculator"></p>
@@ -32,7 +32,7 @@ Close it and you are right back where you were.
 
 ## Installation
 
-1. Download `Hatch-<version>.zip` from [Releases](https://github.com/3Danger/hatch-releases/releases/latest) and move `Hatch.app` to Applications.
+1. Download [Hatch.dmg](https://github.com/3Danger/hatch-releases/releases/latest/download/Hatch.dmg), open it and drag Hatch to Applications.
 2. Hatch is not signed with an Apple certificate, so macOS blocks the first launch. Allow it in System Settings → Privacy & Security → Open Anyway, or with this command:
 
 ```bash
