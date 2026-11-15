@@ -1,7 +1,9 @@
 # Builds Hatch from the private source repository and publishes the release here.
 # Started by a tag push in the source repository (repository_dispatch) or by hand:
 #   gh workflow run release.yml -R 3Danger/hatch-releases -f tag=v0.2.0
-# publish=false only builds and tests.
+# publish=false only builds, tests, signs and makes the update feed (nothing is uploaded).
+# Secrets: SIGNING_CERT_P12, SIGNING_CERT_PASSWORD (the "Hatch Release" certificate), SPARKLE_ED_PRIVATE_KEY
+# (update signing key); variable SIGNING_CERT_SHA1. Created once by scripts/setup-release-signing.sh in hatch.
 name: Release
 
 on:
@@ -63,20 +65,81 @@ jobs:
             MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$(git rev-list --count HEAD)" \
             CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=""
 
+      # The "Hatch Release" certificate keeps one designated requirement across releases, so macOS permissions
+      # (Screen Recording, Accessibility) survive updates. It is self-signed and lives in a temporary keychain.
+      - name: Sign
+        env:
+          P12: ${{ secrets.SIGNING_CERT_P12 }}
+          P12_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+          CERT_SHA1: ${{ vars.SIGNING_CERT_SHA1 }}
+        run: |
+          [ -n "$P12" ] && [ -n "$CERT_SHA1" ] || { echo "no SIGNING_CERT_P12 / SIGNING_CERT_SHA1"; exit 1; }
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          printf '%s' "$P12" | base64 -D > "$RUNNER_TEMP/release.p12"
+          security import "$RUNNER_TEMP/release.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign > /dev/null
+          rm "$RUNNER_TEMP/release.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          APP=build/Build/Products/Release/Hatch.app
+          scripts/sign-app.sh "$APP" "$CERT_SHA1" "$KEYCHAIN"
+          codesign -dr - "$APP" 2>&1 | grep -q "H\"$CERT_SHA1\"" || { echo "designated requirement does not name the release certificate"; exit 1; }
+          # Sparkle.framework loads at launch: a signature it refuses fails here, not on users' Macs
+          "$APP/Contents/MacOS/Hatch" --selftest > /dev/null || { echo "selftest failed"; exit 1; }
+
+      # An app whose key does not match the signing key could never install an update: stop before publishing
+      - name: Check update settings
+        env:
+          ED_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          [ -n "$ED_KEY" ] || { echo "no SPARKLE_ED_PRIVATE_KEY"; exit 1; }
+          PLIST=build/Build/Products/Release/Hatch.app/Contents/Info.plist
+          IN_APP=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" "$PLIST")
+          FROM_SECRET=$(printf '%s' "$ED_KEY" | swift scripts/ed25519.swift public-key)
+          [ -n "$IN_APP" ] && [ "$IN_APP" = "$FROM_SECRET" ] || { echo "SUPublicEDKey does not match SPARKLE_ED_PRIVATE_KEY"; exit 1; }
+          FEED=$(/usr/libexec/PlistBuddy -c "Print :SUFeedURL" "$PLIST")
+          [ "$FEED" = "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/appcast.xml" ] || { echo "unexpected SUFeedURL"; exit 1; }
+
       - name: Package
+        env:
+          ED_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
           APP=build/Build/Products/Release/Hatch.app
-          codesign --verify --deep --strict "$APP"
-          mkdir pkg && cp -R "$APP" pkg/ && cp LICENSE pkg/LICENSE.txt && cp THIRD-PARTY-NOTICES.md pkg/
+          mkdir pkg && ditto "$APP" pkg/Hatch.app && cp LICENSE pkg/LICENSE.txt && cp THIRD-PARTY-NOTICES.md pkg/
+          codesign --verify --deep --strict pkg/Hatch.app
           ditto -c -k pkg "Hatch-$VERSION.zip"
           shasum -a 256 "Hatch-$VERSION.zip" | tee "Hatch-$VERSION.zip.sha256"
+          PREV=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+          git log --format='- %s' ${PREV:+"$PREV.."}"$TAG" > notes.md
+          # update feed for Sparkle: this release only, the archive signed with the update key
+          printf '%s' "$ED_KEY" | scripts/make-appcast.sh "Hatch-$VERSION.zip" "$VERSION" "$(git rev-list --count HEAD)" notes.md \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/Hatch-$VERSION.zip" - > appcast.xml
+          xmllint --noout appcast.xml
 
       - name: Publish release
         if: env.PUBLISH != 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PREV=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
-          git log --format='- %s' ${PREV:+"$PREV.."}"$TAG" > notes.md
-          gh release create "$TAG" "Hatch-$VERSION.zip" "Hatch-$VERSION.zip.sha256" \
+          gh release create "$TAG" "Hatch-$VERSION.zip" "Hatch-$VERSION.zip.sha256" appcast.xml \
             --repo "$GITHUB_REPOSITORY" --target main --title "Hatch $VERSION" --notes-file notes.md
+
+      # What installed copies will see: the latest release's feed, its archive and the archive's signature.
+      # --retry-all-errors: right after publishing, "latest" may still answer 404 for a few seconds
+      - name: Check published update
+        if: env.PUBLISH != 'false'
+        run: |
+          curl -sfL --retry 6 --retry-delay 10 --retry-all-errors -o feed.xml "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/appcast.xml"
+          grep -q "<sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>" feed.xml || { echo "latest feed is not $VERSION"; exit 1; }
+          URL=$(sed -n 's/.*enclosure url="\([^"]*\)".*/\1/p' feed.xml)
+          SIGNATURE=$(sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p' feed.xml)
+          curl -sfL --retry 6 --retry-delay 10 --retry-all-errors -o published.zip "$URL"
+          KEY=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" build/Build/Products/Release/Hatch.app/Contents/Info.plist)
+          swift scripts/ed25519.swift verify "$KEY" published.zip "$SIGNATURE"
+
+      - name: Remove keychain
+        if: always() && env.KEYCHAIN != ''
+        run: security delete-keychain "$KEYCHAIN"

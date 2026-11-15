@@ -41,6 +41,11 @@ xattr -dr com.apple.quarantine /Applications/Hatch.app
 
 3. Press <kbd>⌥</kbd><kbd>Space</kbd>. Hatch lives in the menu bar, not in the Dock.
 
+After that Hatch updates itself. Once a day it asks GitHub whether a new version is out (nothing about you is sent)
+and shows **Update to …** in the panel; a click installs it and restarts Hatch, and macOS keeps Hatch's permissions.
+The check can be turned off in Settings → General. Hatch 0.1.32 and earlier don't update themselves: download the
+latest version once.
+
 macOS will ask for permission to send notifications (when long commands finish) and to access folders the first time a command touches them.
 
 ## Main shortcuts
@@ -177,4 +182,4 @@ macOS will ask for permission to send notifications (when long commands finish) 
 
 Hatch is free to use under its [End User License Agreement](LICENSE). The source code is not public; this repository only hosts releases. Bug reports and ideas are welcome in [Issues](https://github.com/3Danger/hatch-releases/issues).
 
-It includes [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) (MIT), [sql-formatter](https://github.com/sql-formatter-org/sql-formatter) (MIT) and [highlight.js](https://github.com/highlightjs/highlight.js) (BSD-3-Clause): see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+It includes [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) (MIT), [Sparkle](https://sparkle-project.org) (MIT), [sql-formatter](https://github.com/sql-formatter-org/sql-formatter) (MIT) and [highlight.js](https://github.com/highlightjs/highlight.js) (BSD-3-Clause): see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
